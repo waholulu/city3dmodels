@@ -1,0 +1,6 @@
+overpy>=0.7
+shapely>=2.0
+pyproj>=3.6
+numpy>=1.26
+geopy>=2.4
+requests>=2.28
