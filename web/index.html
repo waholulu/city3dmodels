@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>city3dmodels local UI</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+  <link rel="stylesheet" href="/web/style.css"/>
+</head>
+<body>
+  <div id="layout">
+    <div id="map"></div>
+    <div id="panel">
+      <h2>city3dmodels</h2>
+      <div class="row"><input id="city" placeholder="City search" value="New York" /><button id="locate">Locate</button></div>
+      <div class="row"><label>Scale</label><select id="scale"><option>10000</option><option>25000</option><option selected>50000</option><option value="custom">custom</option></select><input id="scaleCustom" type="number" value="50000"/></div>
+      <div class="row"><label>Mode</label><select id="mode"><option>none</option><option>filter</option><option selected>clip</option><option>tile</option></select></div>
+      <div class="row"><label>Crop cm</label><input id="cropW" type="number" step="0.1" placeholder="width"/><input id="cropH" type="number" step="0.1" placeholder="height"/></div>
+      <div class="row"><label>Tile cm</label><input id="tileW" type="number" step="0.1" placeholder="width"/><input id="tileH" type="number" step="0.1" placeholder="height"/></div>
+      <div class="row"><label>Base mm</label><input id="baseMm" type="number" value="1.0" step="0.1"/></div>
+      <div class="row"><label>Output name</label><input id="outputName" placeholder="optional"/></div>
+      <div id="info"></div>
+      <button id="generate">Generate</button>
+      <a id="download" href="#" style="display:none">Download ZIP</a>
+      <pre id="logs"></pre>
+    </div>
+  </div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="/web/app.js"></script>
+</body>
+</html>

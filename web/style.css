@@ -1,0 +1,9 @@
+html,body,#layout{height:100%;margin:0;font-family:Arial,sans-serif}
+#layout{display:flex}
+#map{flex:2}
+#panel{flex:1;padding:12px;overflow:auto;background:#fafafa;border-left:1px solid #ddd}
+.row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.row input,.row select{flex:1;padding:6px}
+#generate{width:100%;padding:10px;margin:10px 0}
+#info{font-size:13px;background:#fff;border:1px solid #ddd;padding:8px;min-height:70px}
+#logs{background:#111;color:#8f8;padding:8px;height:220px;overflow:auto;font-size:12px}

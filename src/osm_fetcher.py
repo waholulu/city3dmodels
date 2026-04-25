@@ -279,10 +279,9 @@ def _parse_relation(
     )
 
 
-def _overpass_query(lat: float, lon: float, radius_m: float) -> str:
-    """Build the Overpass QL query string."""
-    s, w, n, e = compute_bbox(lat, lon, radius_m)
-    bbox = f"{s},{w},{n},{e}"
+def _overpass_query_bbox(south: float, west: float, north: float, east: float) -> str:
+    """Build the Overpass QL query string from an explicit bbox."""
+    bbox = f"{south},{west},{north},{east}"
     return (
         f"[out:json][timeout:60];\n"
         f"(\n"
@@ -293,6 +292,12 @@ def _overpass_query(lat: float, lon: float, radius_m: float) -> str:
         f">;\n"
         f"out skel qt;\n"
     )
+
+
+def _overpass_query(lat: float, lon: float, radius_m: float) -> str:
+    """Build the Overpass QL query string."""
+    s, w, n, e = compute_bbox(lat, lon, radius_m)
+    return _overpass_query_bbox(s, w, n, e)
 
 
 def _run_overpass(query: str, max_retries: int = 3) -> overpy.Result:
@@ -311,6 +316,70 @@ def _run_overpass(query: str, max_retries: int = 3) -> overpy.Result:
         except Exception as exc:
             raise OSMFetchError(f"Unexpected error querying Overpass: {exc}") from exc
     raise OSMFetchError("Overpass query failed (unreachable)")
+
+
+def _parse_overpass_result(
+    result: overpy.Result,
+    origin_lat: float,
+    origin_lon: float,
+    verbose: bool = False,
+) -> list[BuildingFootprint]:
+    """Parse Overpass result into BuildingFootprint entries in local metres."""
+    if verbose:
+        print(f"  Received {len(result.ways)} ways, {len(result.relations)} relations")
+
+    transformer = _make_transformer(origin_lat, origin_lon)
+    origin_x, origin_y = transformer.transform(origin_lon, origin_lat)
+    footprints: list[BuildingFootprint] = []
+
+    for way in result.ways:
+        fp = _parse_way(way, result, transformer, origin_x, origin_y)
+        if fp is not None:
+            footprints.append(fp)
+
+    for rel in result.relations:
+        fp = _parse_relation(rel, result, transformer, origin_x, origin_y)
+        if fp is not None:
+            footprints.append(fp)
+
+    if verbose:
+        print(f"  Parsed {len(footprints)} valid building footprints")
+
+    return footprints
+
+
+def fetch_buildings_bbox(
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+    origin_lat: float,
+    origin_lon: float,
+    verbose: bool = False,
+) -> list[BuildingFootprint]:
+    """Fetch building footprints from OSM for an explicit bounding box."""
+    query = _overpass_query_bbox(south, west, north, east)
+    if verbose:
+        print(f"  Querying Overpass API (bbox: {south:.4f},{west:.4f} → {north:.4f},{east:.4f}) ...")
+
+    result = _run_overpass(query)
+    return _parse_overpass_result(result, origin_lat=origin_lat, origin_lon=origin_lon, verbose=verbose)
+
+
+def bbox_size_m(
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+    origin_lat: float,
+    origin_lon: float,
+) -> tuple[float, float]:
+    """Return bbox width/height in metres using local UTM coordinates."""
+    transformer = _make_transformer(origin_lat, origin_lon)
+    sw_x, sw_y = transformer.transform(west, south)
+    se_x, _ = transformer.transform(east, south)
+    _, nw_y = transformer.transform(west, north)
+    return abs(se_x - sw_x), abs(nw_y - sw_y)
 
 
 def fetch_buildings(
@@ -334,35 +403,18 @@ def fetch_buildings(
     Raises:
         OSMFetchError: on network failure or Overpass error.
     """
-    query = _overpass_query(lat, lon, radius_m)
-    if verbose:
-        bbox = compute_bbox(lat, lon, radius_m)
-        print(f"  Querying Overpass API (bbox: {bbox[0]:.4f},{bbox[1]:.4f} → {bbox[2]:.4f},{bbox[3]:.4f}) ...")
+    south, west, north, east = compute_bbox(lat, lon, radius_m)
+    return fetch_buildings_bbox(
+        south=south,
+        west=west,
+        north=north,
+        east=east,
+        origin_lat=lat,
+        origin_lon=lon,
+        verbose=verbose,
+    )
 
-    result = _run_overpass(query)
 
-    if verbose:
-        print(f"  Received {len(result.ways)} ways, {len(result.relations)} relations")
-
-    transformer = _make_transformer(lat, lon)
-    origin_x, origin_y = transformer.transform(lon, lat)
-
-    footprints: list[BuildingFootprint] = []
-
-    for way in result.ways:
-        fp = _parse_way(way, result, transformer, origin_x, origin_y)
-        if fp is not None:
-            footprints.append(fp)
-
-    for rel in result.relations:
-        fp = _parse_relation(rel, result, transformer, origin_x, origin_y)
-        if fp is not None:
-            footprints.append(fp)
-
-    if verbose:
-        print(f"  Parsed {len(footprints)} valid building footprints")
-
-    return footprints
 
 
 def clip_footprints_to_rect(
@@ -413,4 +465,18 @@ def clip_footprints_to_rect(
                 raw_tags=fp.raw_tags,
             ))
 
+    return result
+
+
+def filter_footprints_to_rect(
+    footprints: list[BuildingFootprint],
+    x_half_m: float,
+    y_half_m: float,
+) -> list[BuildingFootprint]:
+    """Keep footprints whose centroid is inside a rectangle centred at origin."""
+    result: list[BuildingFootprint] = []
+    for fp in footprints:
+        centroid = fp.polygon.centroid
+        if -x_half_m <= centroid.x <= x_half_m and -y_half_m <= centroid.y <= y_half_m:
+            result.append(fp)
     return result
