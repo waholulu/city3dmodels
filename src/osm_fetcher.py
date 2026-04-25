@@ -6,13 +6,13 @@ from dataclasses import dataclass, field
 
 import overpy
 import pyproj
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, box as shapely_box
 from shapely.validation import make_valid
 
 from .exceptions import OSMFetchError
 
 # Overpass API endpoint (uses the main instance)
-_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+_OVERPASS_URL = "https://overpass.kumi.systems/api/interpreter"
 
 # Default building height when no tags provide it (3 floors × 3 m)
 _DEFAULT_HEIGHT_M = 9.0
@@ -102,6 +102,24 @@ def _nodes_to_coords(
     return coords
 
 
+def _get_way_nodes(way: overpy.Way, result: overpy.Result) -> list[overpy.Node] | None:
+    """
+    Return a way's nodes across overpy versions.
+    Newer overpy returns populated `way.nodes`; older patterns used `get_node_ids()+result.get_node`.
+    """
+    try:
+        if getattr(way, "nodes", None):
+            return list(way.nodes)
+    except Exception:
+        pass
+
+    try:
+        node_ids = way.get_node_ids()
+        return [result.get_node(nid) for nid in node_ids]
+    except Exception:
+        return None
+
+
 def _parse_way(
     way: overpy.Way,
     result: overpy.Result,
@@ -110,9 +128,8 @@ def _parse_way(
     origin_y: float,
 ) -> BuildingFootprint | None:
     """Build a BuildingFootprint from a single OSM way."""
-    try:
-        nodes = [result.get_node(nid) for nid in way.get_node_ids()]
-    except Exception:
+    nodes = _get_way_nodes(way, result)
+    if not nodes:
         return None
 
     coords = _nodes_to_coords(nodes, transformer, origin_x, origin_y)
@@ -163,13 +180,11 @@ def _assemble_ring(
     # Build segments: list of (start_node_id, end_node_id, nodes)
     segments = []
     for way in member_ways:
-        try:
-            node_ids = way.get_node_ids()
-            nodes = [result.get_node(nid) for nid in node_ids]
-            if len(nodes) >= 2:
-                segments.append(nodes)
-        except Exception:
+        nodes = _get_way_nodes(way, result)
+        if not nodes:
             continue
+        if len(nodes) >= 2:
+            segments.append(nodes)
 
     if not segments:
         return None
@@ -282,7 +297,7 @@ def _overpass_query(lat: float, lon: float, radius_m: float) -> str:
 
 def _run_overpass(query: str, max_retries: int = 3) -> overpy.Result:
     """Execute Overpass query with exponential backoff retry."""
-    api = overpy.API(url=_OVERPASS_URL)
+    api = overpy.Overpass(url=_OVERPASS_URL)
     for attempt in range(max_retries):
         try:
             return api.query(query)
@@ -348,3 +363,54 @@ def fetch_buildings(
         print(f"  Parsed {len(footprints)} valid building footprints")
 
     return footprints
+
+
+def clip_footprints_to_rect(
+    footprints: list[BuildingFootprint],
+    x_half_m: float,
+    y_half_m: float,
+) -> list[BuildingFootprint]:
+    """
+    Clip footprint polygons to a rectangle centred at the origin.
+
+    Buildings that straddle the boundary are sliced exactly at the edge —
+    the cut face becomes a vertical wall when extruded, giving a clean
+    "knife-cut" boundary rather than a staircase of whole buildings.
+
+    Args:
+        footprints:  Footprints in local metres (origin at city centre).
+        x_half_m:    Half-width of the crop rectangle in metres.
+        y_half_m:    Half-height of the crop rectangle in metres.
+
+    Returns:
+        New list of BuildingFootprint with clipped polygons.
+        Buildings entirely outside are dropped; buildings split into
+        multiple pieces each become a separate footprint.
+    """
+    _MIN_AREA_M2 = 1.0  # discard slivers smaller than 1 m²
+    crop_rect = shapely_box(-x_half_m, -y_half_m, x_half_m, y_half_m)
+    result: list[BuildingFootprint] = []
+
+    for fp in footprints:
+        clipped = fp.polygon.intersection(crop_rect)
+        if clipped.is_empty:
+            continue
+        geom_type = clipped.geom_type
+        polys = (
+            [clipped] if geom_type == "Polygon"
+            else [g for g in clipped.geoms if g.geom_type == "Polygon" and not g.is_empty]
+        )
+        for poly in polys:
+            if poly.area < _MIN_AREA_M2:
+                continue
+            result.append(BuildingFootprint(
+                osm_id=fp.osm_id,
+                osm_type=fp.osm_type,
+                polygon=poly,
+                height_m=fp.height_m,
+                building_type=fp.building_type,
+                levels=fp.levels,
+                raw_tags=fp.raw_tags,
+            ))
+
+    return result

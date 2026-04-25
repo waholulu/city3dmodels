@@ -1,10 +1,17 @@
 """Export 3D building meshes to OBJ + MTL files."""
 
+import math
 import os
 import re
+from collections import defaultdict
 from datetime import datetime
 
 from .model_builder import BuildingMesh
+
+# Default print scale — overridable at runtime via the scale= parameter on each function.
+# OBJ units are inches: coord_scale = 1000 / (scale * 25.4)  (real metres → OBJ inches)
+# e.g. at 1:50000: 1 m real = 1000/(50000*25.4) ≈ 7.874e-4 OBJ inches.
+_PRINT_SCALE = 50_000
 
 # Material definitions (pure geometric, no texture maps)
 _MTL_CONTENT = """\
@@ -31,6 +38,11 @@ illum 1
 """
 
 
+def print_cm_to_real_m(print_cm: float, scale: int = _PRINT_SCALE) -> float:
+    """Convert print centimetres to real-world metres at the given scale."""
+    return print_cm * scale / 100
+
+
 def _city_slug(city_name: str) -> str:
     """Convert city name to a safe filename slug."""
     slug = city_name.lower().strip()
@@ -45,6 +57,7 @@ def export(
     radius_m: float = 2000.0,
     lat: float = 0.0,
     lon: float = 0.0,
+    scale: int = _PRINT_SCALE,
 ) -> tuple[str, str]:
     """
     Write OBJ and MTL files to output_dir.
@@ -55,6 +68,7 @@ def export(
         city_name:  Used to derive the output filename slug.
         radius_m:   Radius of the area, embedded in the header comment.
         lat, lon:   City centre coordinates, embedded in the header comment.
+        scale:      Print scale denominator (e.g. 50000 for 1:50000).
 
     Returns:
         (obj_path, mtl_path) absolute paths to the written files.
@@ -67,7 +81,7 @@ def export(
     mtl_filename = os.path.basename(mtl_path)
 
     _write_mtl(mtl_path)
-    _write_obj(obj_path, mtl_filename, meshes, city_name, radius_m, lat, lon)
+    _write_obj(obj_path, mtl_filename, meshes, city_name, radius_m, lat, lon, scale=scale)
 
     return obj_path, mtl_path
 
@@ -75,6 +89,56 @@ def export(
 def _write_mtl(mtl_path: str) -> None:
     with open(mtl_path, "w", encoding="utf-8") as f:
         f.write(_MTL_CONTENT)
+
+
+def _mesh_centroid_xy(mesh: BuildingMesh) -> tuple[float, float]:
+    """Return the XY centroid of a mesh's base (z=0) vertices in raw metres."""
+    base = [(x, y) for x, y, z in mesh.vertices if z == 0.0]
+    if not base:
+        base = [(mesh.vertices[0][0], mesh.vertices[0][1])]
+    return sum(v[0] for v in base) / len(base), sum(v[1] for v in base) / len(base)
+
+
+def _append_base_plate(
+    f,
+    xmin_obj: float, xmax_obj: float,
+    ymin_obj: float, ymax_obj: float,
+    thickness_obj: float,
+    vertex_offset: int,
+) -> None:
+    """
+    Append a solid rectangular base plate to an open OBJ file.
+    All coordinates are in OBJ units (inches at 1:50000).
+    Top face at z=0, bottom face at z=-thickness_obj.
+    vertex_offset is the current 0-based global vertex count.
+    """
+    z_top = 0.0
+    z_bot = -thickness_obj
+
+    f.write("g base_plate\n")
+    f.write("usemtl mat_ground\n")
+
+    # 8 corners: top ring (1–4), bottom ring (5–8)
+    for x, y, z in [
+        (xmin_obj, ymin_obj, z_top),  # 1
+        (xmax_obj, ymin_obj, z_top),  # 2
+        (xmax_obj, ymax_obj, z_top),  # 3
+        (xmin_obj, ymax_obj, z_top),  # 4
+        (xmin_obj, ymin_obj, z_bot),  # 5
+        (xmax_obj, ymin_obj, z_bot),  # 6
+        (xmax_obj, ymax_obj, z_bot),  # 7
+        (xmin_obj, ymax_obj, z_bot),  # 8
+    ]:
+        f.write(f"v {x:.4f} {y:.4f} {z:.4f}\n")
+
+    o = vertex_offset  # 0-based → add 1 for OBJ 1-based index
+    f.write(f"f {o+1} {o+2} {o+3} {o+4}\n")   # top    (+z normal)
+    f.write(f"f {o+5} {o+8} {o+7} {o+6}\n")   # bottom (-z normal)
+    f.write(f"f {o+1} {o+5} {o+6} {o+2}\n")   # front  (-y)
+    f.write(f"f {o+2} {o+6} {o+7} {o+3}\n")   # right  (+x)
+    f.write(f"f {o+3} {o+7} {o+8} {o+4}\n")   # back   (+y)
+    f.write(f"f {o+4} {o+8} {o+5} {o+1}\n")   # left   (-x)
+    f.write("\n")
 
 
 def _write_obj(
@@ -85,7 +149,18 @@ def _write_obj(
     radius_m: float,
     lat: float,
     lon: float,
+    base_plate: tuple | None = None,
+    scale: int = _PRINT_SCALE,
 ) -> None:
+    """
+    Write OBJ geometry.
+
+    base_plate: if provided, a solid rectangular base plate is appended.
+                Tuple of (xmin_obj, xmax_obj, ymin_obj, ymax_obj, thickness_obj)
+                where all values are in OBJ inches at the given scale.
+    scale:      Print scale denominator (e.g. 50000 for 1:50000).
+    """
+    coord_scale = 1_000 / (scale * 25.4)  # real metres → OBJ inches
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     total_buildings = len(meshes)
 
@@ -95,13 +170,19 @@ def _write_obj(
         f.write(f"# Generated: {timestamp}\n")
         f.write(f"# Source: OpenStreetMap contributors (ODbL 1.0)\n")
         f.write(f"# Centre: lat={lat:.6f}, lon={lon:.6f}  |  Radius: {radius_m:.0f} m\n")
-        f.write(f"# Scale: 1:10000 (1 OBJ unit = 1 metre)\n")
+        f.write(f"# Scale: 1:{scale}  (1 OBJ unit = 1 inch — import as inches)\n")
         f.write(f"# Coordinate system: X=east, Y=north, Z=up  (origin at city centre)\n")
         f.write(f"# Buildings: {total_buildings}\n")
+        if base_plate:
+            xmn, xmx, ymn, ymx, t = base_plate
+            f.write(
+                f"# Base plate: {(xmx-xmn)*25.4:.1f} x {(ymx-ymn)*25.4:.1f} mm footprint, "
+                f"{t*25.4:.1f} mm thick (z = {-t*25.4:.1f} to 0 mm)\n"
+            )
         f.write(f"#\n")
         f.write(f"mtllib {mtl_filename}\n\n")
 
-        global_vertex_offset = 0  # running 0-based count of vertices written so far
+        global_vertex_offset = 0
 
         for mesh in meshes:
             if not mesh.vertices or not mesh.faces:
@@ -109,9 +190,8 @@ def _write_obj(
 
             f.write(f"g building_{mesh.osm_id}\n")
 
-            # Write vertices for this building
             for x, y, z in mesh.vertices:
-                f.write(f"v {x:.4f} {y:.4f} {z:.4f}\n")
+                f.write(f"v {x*coord_scale:.6f} {y*coord_scale:.6f} {z*coord_scale:.6f}\n")
 
             # Write faces, grouped by material
             current_material = None
@@ -119,9 +199,112 @@ def _write_obj(
                 if material != current_material:
                     f.write(f"usemtl {material}\n")
                     current_material = material
-                # Adjust indices from mesh-local (1-based) to global (1-based)
                 global_indices = [idx + global_vertex_offset for idx in indices]
                 f.write("f " + " ".join(str(i) for i in global_indices) + "\n")
 
             global_vertex_offset += len(mesh.vertices)
             f.write("\n")
+
+        if base_plate:
+            _append_base_plate(f, *base_plate, global_vertex_offset)
+
+
+def export_tiled(
+    meshes: list[BuildingMesh],
+    output_dir: str,
+    city_name: str = "city",
+    tile_w_cm: float = 10.0,
+    tile_h_cm: float = 15.0,
+    radius_m: float = 2000.0,
+    lat: float = 0.0,
+    lon: float = 0.0,
+    scale: int = _PRINT_SCALE,
+) -> list[tuple[str, str]]:
+    """
+    Split meshes into a regular grid and export each non-empty cell as its own OBJ+MTL.
+
+    Each building is assigned to the tile that contains its footprint centroid.
+    Tile dimensions are given in centimetres at the given print scale
+    (e.g. at 1:50000, tile_w_cm=10 → 10 cm × 50000/100 = 5000 m real).
+
+    Returns:
+        List of (obj_path, mtl_path) for each exported tile, sorted by (row, col).
+    """
+    # Tile size in real-world metres: 1 print cm = scale/100 real m
+    tile_w_m = tile_w_cm * scale / 100
+    tile_h_m = tile_h_cm * scale / 100
+
+    # Assign each mesh to (row, col) based on footprint centroid in real metres
+    tiles: dict[tuple[int, int], list[BuildingMesh]] = defaultdict(list)
+    for mesh in meshes:
+        if not mesh.vertices:
+            continue
+        base_verts = [(x, y) for x, y, z in mesh.vertices if z == 0.0]
+        if not base_verts:
+            base_verts = [(mesh.vertices[0][0], mesh.vertices[0][1])]
+        cx = sum(v[0] for v in base_verts) / len(base_verts)
+        cy = sum(v[1] for v in base_verts) / len(base_verts)
+        col = math.floor(cx / tile_w_m)
+        row = math.floor(cy / tile_h_m)
+        tiles[(row, col)].append(mesh)
+
+    base_slug = _city_slug(city_name)
+    results = []
+    for (row, col) in sorted(tiles):
+        tile_meshes = tiles[(row, col)]
+        # Use 'p'/'m' prefix so the slug stays unique across positive/negative indices
+        r_str = f"p{row}" if row >= 0 else f"m{abs(row)}"
+        c_str = f"p{col}" if col >= 0 else f"m{abs(col)}"
+        filename_stem = f"{base_slug}_tile_r{r_str}_c{c_str}"
+        obj_path = os.path.join(output_dir, f"{filename_stem}.obj")
+        mtl_path = os.path.join(output_dir, f"{filename_stem}.mtl")
+        _write_mtl(mtl_path)
+        _write_obj(obj_path, os.path.basename(mtl_path), tile_meshes,
+                   city_name, radius_m, lat, lon, scale=scale)
+        results.append((obj_path, mtl_path))
+
+    return results
+
+
+def export_cropped(
+    meshes: list[BuildingMesh],
+    output_dir: str,
+    city_name: str = "city",
+    crop_w_cm: float = 10.0,
+    crop_h_cm: float = 15.0,
+    base_thickness_mm: float = 1.0,
+    radius_m: float = 2000.0,
+    lat: float = 0.0,
+    lon: float = 0.0,
+    scale: int = _PRINT_SCALE,
+) -> tuple[str, str]:
+    """
+    Export a single OBJ with a rectangular base plate of base_thickness_mm at the bottom.
+
+    Footprints should already be clipped to crop_w_cm × crop_h_cm before building meshes
+    (via clip_footprints_to_rect) so that boundary buildings are knife-cut rather than
+    centroid-filtered. The crop dimensions here are only used to size the base plate.
+
+    Returns:
+        (obj_path, mtl_path)
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    slug = _city_slug(city_name)
+    obj_path = os.path.join(output_dir, f"{slug}_cropped.obj")
+    mtl_path = os.path.join(output_dir, f"{slug}_cropped.mtl")
+    mtl_filename = os.path.basename(mtl_path)
+
+    _write_mtl(mtl_path)
+
+    # Base plate bounds in OBJ inches (print cm → mm → inches)
+    bx_obj = crop_w_cm * 10.0 / 25.4 / 2.0
+    by_obj = crop_h_cm * 10.0 / 25.4 / 2.0
+    thickness_obj = base_thickness_mm / 25.4
+
+    _write_obj(
+        obj_path, mtl_filename, meshes, city_name, radius_m, lat, lon,
+        base_plate=(-bx_obj, bx_obj, -by_obj, by_obj, thickness_obj),
+        scale=scale,
+    )
+
+    return obj_path, mtl_path

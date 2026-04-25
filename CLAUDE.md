@@ -1,83 +1,99 @@
-# CLAUDE.md — city3dmodels
+# CLAUDE.md
 
-## 项目概述
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-从 OpenStreetMap 自动下载城市建筑轮廓，拉伸为三维网格，导出 OBJ + MTL 格式的 1:10000 比例模型。
+## Project overview
 
-## 安装依赖
+Downloads building footprints from OpenStreetMap, extrudes them into 3D meshes, and exports OBJ + MTL files at 1:10000 scale (1 OBJ unit = 1 mm, so models import at the correct print size when the unit is set to mm).
+
+## Setup
 
 ```bash
 pip install -r requirements.txt
+# Dependencies: overpy shapely pyproj numpy geopy requests
 ```
 
-依赖项：`overpy` `shapely` `pyproj` `numpy` `geopy` `requests`
-
-## 运行
+## Running
 
 ```bash
-# 基本用法
+# Basic
 python main.py "New York" --radius 1000 --output ./output --verbose
 
-# 常用选项
-python main.py <城市名> [--radius 米] [--output 目录] [--min-buildings N] [-v]
+# Crop to a single printable rectangle with a base plate
+python main.py "New York" --radius 1000 --crop 10 15 --base-mm 1.0 --output ./output
+
+# Split into tiles (10 cm × 15 cm each at 1:10000)
+python main.py "New York" --radius 1000 --tile 10 15 --output ./output
+
+# Full option reference
+python main.py <city> [--radius M] [--output DIR] [--min-buildings N]
+               [--crop W_CM H_CM] [--base-mm MM]
+               [--tile W_CM H_CM] [-v]
 ```
 
-## 代码结构
+## Architecture
 
 ```
-main.py              # CLI 入口，run_pipeline() 串联所有阶段
+main.py              # CLI entry point; run_pipeline() chains all stages
 src/
-  exceptions.py      # 自定义异常：City3DError 及其子类
-  geocoder.py        # geocode_city() → (lat, lon)，Nominatim
+  exceptions.py      # City3DError base + subclasses (GeocoderError, OSMFetchError, ValidationError)
+  geocoder.py        # geocode_city() → (lat, lon) via Nominatim
   osm_fetcher.py     # fetch_buildings() → list[BuildingFootprint]
   model_builder.py   # build_all_meshes() → list[BuildingMesh]
-  exporter.py        # export() → (obj_path, mtl_path)
-  validator.py       # 三阶段校验，返回 ValidationReport
+  exporter.py        # export() / export_tiled() / export_cropped() → OBJ + MTL
+  validator.py       # Three-stage validation returning ValidationReport
 ```
 
-## 数据流
+## Data flow
 
 ```
 geocode_city(city)
-  → fetch_buildings(lat, lon, radius)   # Overpass API
-  → validate_footprints(footprints)     # Stage A：轮廓校验
-  → build_all_meshes(footprints)        # 拉伸建模
-  → validate_meshes(meshes)             # Stage B：网格校验
-  → export(meshes, output_dir)          # 写 OBJ + MTL
-  → validate_output_files(obj, mtl)     # Stage C：文件校验
+  → fetch_buildings(lat, lon, radius)   # Overpass API, exponential-backoff retry
+  → validate_footprints(footprints)     # Stage A: polygon geometry + height range
+  → build_all_meshes(footprints)        # Shapely Delaunay triangulation + wall extrusion
+  → validate_meshes(meshes)             # Stage B: NaN/Inf, face index bounds
+  → export*(meshes, output_dir)         # Write OBJ + MTL
+  → validate_output_files(obj, mtl)     # Stage C: file size, bbox, material consistency
 ```
 
-## 关键设计决策
+## Key design decisions
 
-| 问题 | 决策 |
-|------|------|
-| 坐标投影 | 按经度自动选择 UTM 带（EPSG:326xx/327xx），精度优于 0.04% |
-| 高度来源 | `building:height` > `height` > `levels×3m` > 默认 9m |
-| 屋顶三角化 | Shapely Delaunay，支持凹多边形；失败时退回 n 边形面 |
-| 庭院（内环） | 反向绕序拉伸内环墙面，不生成屋顶面 |
-| OBJ 单位 | 1 单位 = 1 米；1:10000 仅为文件头注释，不缩放坐标 |
-| 网络重试 | Overpass 指数退避 3 次（5s / 10s / 20s） |
+| Concern | Decision |
+|---------|----------|
+| Projection | Auto-select UTM zone from longitude (EPSG:326xx/327xx); accuracy < 0.04% |
+| Height source | `building:height` → `height` → `levels×3 m` → default 9 m |
+| Roof triangulation | Shapely Delaunay; falls back to n-gon face if triangulation fails |
+| Courtyards | Inner rings extruded with reversed winding; no roof face generated |
+| OBJ scale | `_PRINT_SCALE = 50_000`; `_COORD_SCALE = 1000 / (_PRINT_SCALE × 25.4) ≈ 7.874e-4` (m → OBJ **inches** at 1:50000); most software imports OBJ in inches by default so no unit override needed |
+| Network retry | Overpass: 3 attempts, 5 s / 10 s / 20 s backoff |
+| Face indices | `BuildingMesh.faces` stores **1-based local** indices; `global_vertex_offset` is accumulated in `_write_obj()` and must never be reset between buildings |
 
-## 修改指南
+## Making changes
 
-### 新增数据源
-在 `src/osm_fetcher.py` 中修改 `_overpass_query()` 的 Overpass QL 语句，或新增独立的 fetcher 模块并在 `main.py` 中切换。
+### Add a new export format (e.g., glTF)
+Create `src/exporter_gltf.py` accepting `list[BuildingMesh]`; add `--format` to `main.py`.
 
-### 新增输出格式（如 glTF）
-在 `src/` 下新建 `exporter_gltf.py`，接收 `list[BuildingMesh]`，在 `main.py` 中增加 `--format` 参数按需调用。
+### Add a new OSM data source
+Modify `_overpass_query()` in `src/osm_fetcher.py`, or add a new fetcher and switch in `main.py`.
 
-### 修改材质
-编辑 `src/exporter.py` 中的 `_MTL_CONTENT` 字符串，调整 `Kd`（漫反射色）即可。
+### Change material colours
+Edit `_MTL_CONTENT` in `src/exporter.py`; adjust `Kd` (diffuse RGB) values.
 
-### 调整校验阈值
-`src/validator.py` 顶部的常量：
-- `_MIN_HEIGHT_M` / `_MAX_HEIGHT_M`：高度合法范围
-- `validate_footprints()` 的 `min_buildings` 参数：最少建筑数
+### Tune validation thresholds
+Constants at the top of `src/validator.py`:
+- `_MIN_HEIGHT_M` / `_MAX_HEIGHT_M` — valid building height range
+- `_OBJ_MIN_SIZE_BYTES` / `_OBJ_MAX_SIZE_BYTES` — OBJ file size limits (default 10 KB – 50 MB)
+- `_MTL_MAX_SIZE_BYTES` — MTL size cap (default 1 MB)
+- `_PRINT_MIN_EXTENT_CM` / `_PRINT_MAX_EXTENT_CM` — footprint side length at print scale (default 5–50 cm)
+- `_PRINT_MAX_HEIGHT_CM` — tallest building at print scale (default 10 cm)
+- `validate_footprints()` `min_buildings` parameter
+- `_OBJ_UNIT_CM = 25.4 / 10` — conversion factor OBJ inches → cm used in print-size stats
 
-## 注意事项
+## Gotchas
 
-- **Nominatim 限速**：代码已在请求前 `sleep(1)`，不要并发调用 `geocode_city()`
-- **Overpass 超时**：大半径（>3km）可能触发 60s 超时，可在 `_overpass_query()` 中调高 `timeout`
-- **多边形修复**：`make_valid()` 会修改几何形状，修复后仍需检查 `is_valid`
-- **OBJ 索引**：全局顶点表，导出时 `global_vertex_offset` 必须跨建筑累加，勿重置
-- **数据许可**：输出模型须署名 © OpenStreetMap contributors（ODbL 1.0）
+- **Nominatim rate limit**: `sleep(1)` is called before each geocode request; never call `geocode_city()` concurrently.
+- **Overpass timeout**: radii > 3 km may hit the 60 s server limit; increase `timeout` in `_overpass_query()`.
+- **`make_valid()` side-effects**: can return a `GeometryCollection`; always check `geom_type == "Polygon"` after repair and extract the largest polygon.
+- **Global vertex offset**: `global_vertex_offset` in `_write_obj()` must accumulate across all buildings; resetting it corrupts every subsequent face.
+- **No test suite**: there are currently no automated tests. Manual validation is done by running the pipeline and inspecting `ValidationReport` output.
+- **Attribution**: output models must credit © OpenStreetMap contributors (ODbL 1.0).

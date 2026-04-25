@@ -1,6 +1,5 @@
 """Validate building footprints, meshes, and output OBJ files."""
 
-import math
 import os
 from dataclasses import dataclass, field
 from typing import Any
@@ -274,24 +273,47 @@ def _parse_mtl_materials(mtl_path: str) -> set[str]:
     return materials
 
 
+_OBJ_MIN_SIZE_BYTES = 10 * 1024        # 10 KB — below this the model is likely broken
+_OBJ_MAX_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB — above this the file is impractically large
+_MTL_MAX_SIZE_BYTES = 1 * 1024 * 1024   # 1 MB  — MTL should be tiny
+
+_PRINT_SCALE = 50_000  # default; overridable via scale= on validate_output_files()
+_PRINT_MIN_EXTENT_CM = 1.0   # print footprint smaller than 1 cm is too tiny to be useful
+_PRINT_MAX_EXTENT_CM = 50.0  # print footprint larger than 50 cm exceeds a typical desk model
+_PRINT_MAX_HEIGHT_CM = 10.0  # tallest building print height
+
+
+def _human_size(n: int) -> str:
+    """Format byte count as a human-readable string."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(n) < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
 def validate_output_files(
     obj_path: str,
     mtl_path: str,
     radius_m: float,
+    is_tile: bool = False,
+    scale: int = _PRINT_SCALE,
 ) -> ValidationReport:
     """
     Validate the exported OBJ and MTL files.
 
     Checks:
     - Files exist and are non-empty
+    - File sizes within plausible range (10 KB – 50 MB for OBJ; skipped for tiles)
     - OBJ references the correct MTL filename
     - OBJ re-parses correctly (vertex and face counts > 0)
     - Bounding box of model is within expected radius
+    - Print-size plausibility checks (skipped for individual tiles)
     - All usemtl names exist in the MTL file
     """
     report = ValidationReport()
 
-    # --- File existence ---
+    # --- File existence & size plausibility ---
     for path, label in [(obj_path, "OBJ"), (mtl_path, "MTL")]:
         if not os.path.isfile(path):
             report.error(f"{label} file not found: {path}")
@@ -301,6 +323,27 @@ def validate_output_files(
             report.error(f"{label} file is empty: {path}")
             return report
         report.stats[f"{label.lower()}_size_bytes"] = size
+        report.stats[f"{label.lower()}_size_human"] = _human_size(size)
+
+    obj_size = report.stats["obj_size_bytes"]
+    mtl_size = report.stats["mtl_size_bytes"]
+
+    if not is_tile and obj_size < _OBJ_MIN_SIZE_BYTES:
+        report.error(
+            f"OBJ file is suspiciously small ({_human_size(obj_size)}). "
+            f"Expected at least {_human_size(_OBJ_MIN_SIZE_BYTES)}; "
+            "the model likely contains too few buildings or is corrupt."
+        )
+    if obj_size > _OBJ_MAX_SIZE_BYTES:
+        report.error(
+            f"OBJ file is too large ({_human_size(obj_size)}). "
+            f"Maximum allowed is {_human_size(_OBJ_MAX_SIZE_BYTES)}. "
+            "Consider reducing --radius to cover a smaller area."
+        )
+    if mtl_size > _MTL_MAX_SIZE_BYTES:
+        report.warn(
+            f"MTL file is unexpectedly large ({_human_size(mtl_size)})."
+        )
 
     # --- Parse OBJ ---
     try:
@@ -325,20 +368,60 @@ def validate_output_files(
             f"actual MTL filename '{expected_mtl_name}'."
         )
 
-    # --- Bounding box plausibility ---
+    # --- Bounding box & print-size plausibility ---
+    # OBJ coordinates are in inches (1 OBJ unit = 1 inch).
+    _coord_scale = 1_000 / (scale * 25.4)  # real metres → OBJ inches
+    _obj_unit_cm = 25.4 / 10               # 1 OBJ inch = 2.54 cm
     if obj_data["bbox"]:
         xmin, xmax, ymin, ymax, zmin, zmax = obj_data["bbox"]
-        max_extent = max(abs(xmin), abs(xmax), abs(ymin), abs(ymax))
-        allowed = radius_m * 1.1
-        if max_extent > allowed:
+
+        max_extent_obj = max(abs(xmin), abs(xmax), abs(ymin), abs(ymax))  # OBJ inches
+        allowed_obj = radius_m * _coord_scale * 1.1                        # OBJ inches
+        if max_extent_obj > allowed_obj:
             report.warn(
-                f"Model bounding box extends {max_extent:.0f} m from origin "
-                f"(expected < {allowed:.0f} m for radius {radius_m:.0f} m)."
+                f"Model bounding box extends {max_extent_obj * 25.4:.0f} mm from origin "
+                f"(expected < {allowed_obj * 25.4:.0f} mm for radius {radius_m:.0f} m)."
             )
         if zmin < 0:
-            report.warn(f"Model has vertices below z=0 (zmin={zmin:.2f} m).")
-        report.stats["model_extent_m"] = round(max_extent, 1)
-        report.stats["model_height_max_m"] = round(zmax, 1)
+            report.warn(f"Model has vertices below z=0 (zmin={zmin * 25.4:.2f} mm).")
+
+        report.stats["model_extent_mm"] = round(max_extent_obj * 25.4, 1)
+        report.stats["model_height_max_mm"] = round(zmax * 25.4, 1)
+
+        # OBJ coords are in inches — convert to cm for display
+        print_w_cm = (xmax - xmin) * _obj_unit_cm
+        print_d_cm = (ymax - ymin) * _obj_unit_cm
+        print_h_cm = (zmax - max(zmin, 0.0)) * _obj_unit_cm
+        print_max_side = max(print_w_cm, print_d_cm)
+
+        report.stats["print_scale"] = f"1:{scale}"
+        report.stats["print_width_cm"] = round(print_w_cm, 1)
+        report.stats["print_depth_cm"] = round(print_d_cm, 1)
+        report.stats["print_height_cm"] = round(print_h_cm, 1)
+        report.stats["print_summary"] = (
+            f"{print_w_cm:.1f} x {print_d_cm:.1f} x {print_h_cm:.1f} cm"
+        )
+
+        if not is_tile and print_max_side < _PRINT_MIN_EXTENT_CM:
+            report.error(
+                f"Scaled model footprint is too small for printing "
+                f"({print_w_cm:.1f} x {print_d_cm:.1f} cm at 1:{_PRINT_SCALE}). "
+                f"Minimum side should be >= {_PRINT_MIN_EXTENT_CM} cm. "
+                "Try increasing --radius."
+            )
+        if not is_tile and print_max_side > _PRINT_MAX_EXTENT_CM:
+            report.warn(
+                f"Scaled model footprint is very large "
+                f"({print_w_cm:.1f} x {print_d_cm:.1f} cm at 1:{_PRINT_SCALE}). "
+                f"Recommended max side is {_PRINT_MAX_EXTENT_CM} cm. "
+                "Consider reducing --radius for a more manageable print."
+            )
+        if print_h_cm > _PRINT_MAX_HEIGHT_CM:
+            report.warn(
+                f"Tallest building prints at {print_h_cm:.1f} cm "
+                f"(> {_PRINT_MAX_HEIGHT_CM} cm recommended max). "
+                "This may look disproportionate in a desk-sized model."
+            )
 
     # --- Material consistency ---
     try:
