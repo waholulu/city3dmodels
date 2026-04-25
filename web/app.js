@@ -4,19 +4,29 @@ const drawnItems = new L.FeatureGroup(); map.addLayer(drawnItems);
 const clipLayer = new L.FeatureGroup(); map.addLayer(clipLayer);
 new L.Control.Draw({ edit: { featureGroup: drawnItems }, draw: { polygon:false, polyline:false, circle:false, marker:false, circlemarker:false, rectangle:true } }).addTo(map);
 
+// show/hide the custom scale input
+const scaleCustomInput = document.getElementById('scaleCustom');
+document.getElementById('scale').addEventListener('change', function() {
+  scaleCustomInput.style.display = this.value === 'custom' ? 'block' : 'none';
+});
+scaleCustomInput.style.display = 'none';  // hidden unless custom is selected
+
 let currentBbox = null;
+
 function getScale(){
   const scaleSel = document.getElementById('scale').value;
-  if (scaleSel === 'custom') return Number(document.getElementById('scaleCustom').value || 50000);
-  document.getElementById('scaleCustom').value = scaleSel;
+  if (scaleSel === 'custom') return Number(scaleCustomInput.value || 50000);
+  scaleCustomInput.value = scaleSel;
   return Number(scaleSel);
 }
+
 function bboxMeters(b){
   const southWest = L.latLng(b[0], b[1]);
   const southEast = L.latLng(b[0], b[3]);
   const northWest = L.latLng(b[2], b[1]);
   return [southWest.distanceTo(southEast), southWest.distanceTo(northWest)];
 }
+
 function refreshInfo(){
   if (!currentBbox) return;
   const scale = getScale();
@@ -30,6 +40,8 @@ function refreshInfo(){
 
 function mToLatDeg(m){ return m / 111320; }
 function mToLonDeg(m, lat){ return m / (111320 * Math.cos(lat * Math.PI / 180)); }
+
+const MAX_TILE_CELLS = 200;
 
 function updateClipBoundary(){
   clipLayer.clearLayers();
@@ -56,7 +68,9 @@ function updateClipBoundary(){
     } else {
       [s, w, n, e] = [currentBbox[0], currentBbox[1], currentBbox[2], currentBbox[3]];
     }
-    L.rectangle([[s, w], [n, e]], dashStyle).bindTooltip('Clip boundary', { permanent: false }).addTo(clipLayer);
+    L.rectangle([[s, w], [n, e]], dashStyle)
+      .bindTooltip('Clip boundary', { permanent: false })
+      .addTo(clipLayer);
   } else if (mode === 'tile') {
     const tileW = Number(document.getElementById('tileW').value) || 10;
     const tileH = Number(document.getElementById('tileH').value) || 15;
@@ -66,6 +80,15 @@ function updateClipBoundary(){
     const totalLon = currentBbox[3] - currentBbox[1];
     const nRows = Math.ceil(totalLat / latStep);
     const nCols = Math.ceil(totalLon / lonStep);
+
+    if (nRows * nCols > MAX_TILE_CELLS) {
+      // too many tiles to draw individually — just show the outer boundary
+      L.rectangle([[currentBbox[0], currentBbox[1]], [currentBbox[2], currentBbox[3]]], dashStyle)
+        .bindTooltip(`Tile boundary (${nRows}×${nCols} tiles — zoom in to see grid)`, { permanent: false })
+        .addTo(clipLayer);
+      return;
+    }
+
     const tileStyle = { ...dashStyle, fillOpacity: 0 };
     for (let r = 0; r < nRows; r++) {
       for (let c = 0; c < nCols; c++) {
@@ -79,21 +102,37 @@ function updateClipBoundary(){
   }
 }
 
+function bboxFromLayer(layer){
+  const b = layer.getBounds();
+  return [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];
+}
+
 map.on(L.Draw.Event.CREATED, (e) => {
-  drawnItems.clearLayers(); drawnItems.addLayer(e.layer);
-  const b = e.layer.getBounds();
-  currentBbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];
+  drawnItems.clearLayers();
+  drawnItems.addLayer(e.layer);
+  currentBbox = bboxFromLayer(e.layer);
   refreshInfo();
   updateClipBoundary();
 });
-map.on(L.Draw.Event.EDITED, () => { refreshInfo(); updateClipBoundary(); });
-map.on(L.Draw.Event.DELETED, () => { currentBbox = null; clipLayer.clearLayers(); });
 
-['scale', 'scaleCustom', 'mode', 'cropW', 'cropH', 'tileW', 'tileH'].forEach(id => {
+map.on(L.Draw.Event.EDITED, (e) => {
+  e.layers.eachLayer(layer => { currentBbox = bboxFromLayer(layer); });
+  refreshInfo();
+  updateClipBoundary();
+});
+
+map.on(L.Draw.Event.DELETED, () => {
+  currentBbox = null;
+  clipLayer.clearLayers();
+  document.getElementById('info').innerText = '';
+});
+
+['scale', 'mode', 'cropW', 'cropH', 'tileW', 'tileH'].forEach(id => {
   const el = document.getElementById(id);
   el.addEventListener('change', () => { refreshInfo(); updateClipBoundary(); });
-  el.addEventListener('input', () => { refreshInfo(); updateClipBoundary(); });
+  el.addEventListener('input',  () => { refreshInfo(); updateClipBoundary(); });
 });
+scaleCustomInput.addEventListener('input', () => { refreshInfo(); updateClipBoundary(); });
 
 document.getElementById('locate').onclick = async () => {
   const city = document.getElementById('city').value;
@@ -105,20 +144,31 @@ document.getElementById('locate').onclick = async () => {
 let pollTimer = null;
 document.getElementById('generate').onclick = async () => {
   if (!currentBbox) { alert('Please draw a rectangle first.'); return; }
+
+  const dl = document.getElementById('download');
+  dl.style.display = 'none';
+  dl.href = '#';
+
   const body = {
     city: document.getElementById('city').value || null,
     bbox: currentBbox,
     scale: getScale(),
     mode: document.getElementById('mode').value,
-    crop_cm: (document.getElementById('cropW').value && document.getElementById('cropH').value) ? [Number(document.getElementById('cropW').value), Number(document.getElementById('cropH').value)] : null,
-    tile_cm: (document.getElementById('tileW').value && document.getElementById('tileH').value) ? [Number(document.getElementById('tileW').value), Number(document.getElementById('tileH').value)] : null,
+    crop_cm: (document.getElementById('cropW').value && document.getElementById('cropH').value)
+      ? [Number(document.getElementById('cropW').value), Number(document.getElementById('cropH').value)]
+      : null,
+    tile_cm: (document.getElementById('tileW').value && document.getElementById('tileH').value)
+      ? [Number(document.getElementById('tileW').value), Number(document.getElementById('tileH').value)]
+      : null,
     base_mm: Number(document.getElementById('baseMm').value || 1),
     output_name: document.getElementById('outputName').value || null,
     verbose: true,
   };
+
   document.getElementById('logs').textContent = 'Submitting job...\n';
   const resp = await fetch('/api/generate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
   const { job_id } = await resp.json();
+
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
     const r = await fetch(`/api/jobs/${job_id}`);
@@ -126,7 +176,6 @@ document.getElementById('generate').onclick = async () => {
     document.getElementById('logs').textContent = j.logs.join('\n') + (j.error ? `\nERROR: ${j.error}` : '');
     if (j.status === 'done') {
       clearInterval(pollTimer);
-      const dl = document.getElementById('download');
       dl.href = `/api/jobs/${job_id}/download`;
       dl.style.display = 'inline-block';
     }
