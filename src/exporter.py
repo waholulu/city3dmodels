@@ -248,6 +248,8 @@ def export_tiled(
         row = math.floor(cy / tile_h_m)
         tiles[(row, col)].append(mesh)
 
+    os.makedirs(output_dir, exist_ok=True)
+
     base_slug = _city_slug(city_name)
     results = []
     for (row, col) in sorted(tiles):
