@@ -278,3 +278,9 @@ def generate_model(
         print_size_cm=print_size_cm,
         message="ok",
     )
+
+
+
+def run_pipeline(**kwargs) -> GenerationResult:
+    """Backward-friendly alias used by UI integrations."""
+    return generate_model(**kwargs)
