@@ -399,20 +399,20 @@ def validate_output_files(
         report.stats["print_depth_cm"] = round(print_d_cm, 1)
         report.stats["print_height_cm"] = round(print_h_cm, 1)
         report.stats["print_summary"] = (
-            f"{print_w_cm:.1f} x {print_d_cm:.1f} x {print_h_cm:.1f} cm"
+            f"{print_w_cm:.1f} x {print_d_cm:.1f} x {print_h_cm:.1f} cm @ 1:{scale}"
         )
 
         if not is_tile and print_max_side < _PRINT_MIN_EXTENT_CM:
             report.error(
                 f"Scaled model footprint is too small for printing "
-                f"({print_w_cm:.1f} x {print_d_cm:.1f} cm at 1:{_PRINT_SCALE}). "
+                f"({print_w_cm:.1f} x {print_d_cm:.1f} cm at 1:{scale}). "
                 f"Minimum side should be >= {_PRINT_MIN_EXTENT_CM} cm. "
                 "Try increasing --radius."
             )
         if not is_tile and print_max_side > _PRINT_MAX_EXTENT_CM:
             report.warn(
                 f"Scaled model footprint is very large "
-                f"({print_w_cm:.1f} x {print_d_cm:.1f} cm at 1:{_PRINT_SCALE}). "
+                f"({print_w_cm:.1f} x {print_d_cm:.1f} cm at 1:{scale}). "
                 f"Recommended max side is {_PRINT_MAX_EXTENT_CM} cm. "
                 "Consider reducing --radius for a more manageable print."
             )

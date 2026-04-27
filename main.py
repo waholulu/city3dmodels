@@ -39,7 +39,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default="./output", metavar="DIR", help="Output directory")
     parser.add_argument("--min-buildings", type=int, default=5, metavar="N", dest="min_buildings")
     parser.add_argument("--crop", nargs=2, type=float, metavar=("W_CM", "H_CM"), default=None)
-    parser.add_argument("--tile", nargs=2, type=float, metavar=("W_CM", "H_CM"), default=None)
+    parser.add_argument(
+        "--tile",
+        nargs=2,
+        type=float,
+        metavar=("W_CM", "H_CM"),
+        default=None,
+        help="Tile size in cm at the selected print scale (W_CM H_CM)",
+    )
     parser.add_argument("--base-mm", type=float, default=1.0, dest="base_mm", metavar="MM")
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser.parse_args()
