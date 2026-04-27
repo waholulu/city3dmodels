@@ -55,6 +55,7 @@ streamlit run app.py
 - 比例尺 / 底板厚度 / fetch buffer
 - 地图预览（红色最终 crop，灰色 fetch buffer）
 - 一键调用 pipeline 生成 OBJ/MTL
+- 输出日志展示与 OBJ/MTL/ZIP 下载按钮
 
 ## FastAPI + Leaflet UI（已有）
 
