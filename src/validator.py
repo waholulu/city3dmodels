@@ -369,26 +369,26 @@ def validate_output_files(
         )
 
     # --- Bounding box & print-size plausibility ---
-    # OBJ coordinates are in inches (1 OBJ unit = 1 inch).
-    _coord_scale = 1_000 / (scale * 25.4)  # real metres → OBJ inches
-    _obj_unit_cm = 25.4 / 10               # 1 OBJ inch = 2.54 cm
+    # OBJ coordinates are in millimetres (1 OBJ unit = 1 mm).
+    _coord_scale = 1_000 / scale  # real metres → OBJ mm
+    _obj_unit_cm = 0.1            # 1 OBJ mm = 0.1 cm
     if obj_data["bbox"]:
         xmin, xmax, ymin, ymax, zmin, zmax = obj_data["bbox"]
 
-        max_extent_obj = max(abs(xmin), abs(xmax), abs(ymin), abs(ymax))  # OBJ inches
-        allowed_obj = radius_m * _coord_scale * 1.1                        # OBJ inches
+        max_extent_obj = max(abs(xmin), abs(xmax), abs(ymin), abs(ymax))  # OBJ mm
+        allowed_obj = radius_m * _coord_scale * 1.1                        # OBJ mm
         if max_extent_obj > allowed_obj:
             report.warn(
-                f"Model bounding box extends {max_extent_obj * 25.4:.0f} mm from origin "
-                f"(expected < {allowed_obj * 25.4:.0f} mm for radius {radius_m:.0f} m)."
+                f"Model bounding box extends {max_extent_obj:.0f} mm from origin "
+                f"(expected < {allowed_obj:.0f} mm for radius {radius_m:.0f} m)."
             )
         if zmin < 0:
-            report.warn(f"Model has vertices below z=0 (zmin={zmin * 25.4:.2f} mm).")
+            report.warn(f"Model has vertices below z=0 (zmin={zmin:.2f} mm).")
 
-        report.stats["model_extent_mm"] = round(max_extent_obj * 25.4, 1)
-        report.stats["model_height_max_mm"] = round(zmax * 25.4, 1)
+        report.stats["model_extent_mm"] = round(max_extent_obj, 1)
+        report.stats["model_height_max_mm"] = round(zmax, 1)
 
-        # OBJ coords are in inches — convert to cm for display
+        # OBJ coords are in mm — convert to cm for display
         print_w_cm = (xmax - xmin) * _obj_unit_cm
         print_d_cm = (ymax - ymin) * _obj_unit_cm
         print_h_cm = (zmax - max(zmin, 0.0)) * _obj_unit_cm

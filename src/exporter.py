@@ -9,8 +9,9 @@ from datetime import datetime
 from .model_builder import BuildingMesh
 
 # Default print scale — overridable at runtime via the scale= parameter on each function.
-# OBJ units are inches: coord_scale = 1000 / (scale * 25.4)  (real metres → OBJ inches)
-# e.g. at 1:50000: 1 m real = 1000/(50000*25.4) ≈ 7.874e-4 OBJ inches.
+# OBJ units are millimetres: coord_scale = 1000 / scale  (real metres → OBJ mm).
+# e.g. at 1:50000: 1 m real = 1000/50000 = 0.02 OBJ mm. Most slicers and CAD apps
+# import OBJ as mm by default, so the model lands at the correct print size.
 _PRINT_SCALE = 50_000
 
 # Material definitions (pure geometric, no texture maps)
@@ -108,7 +109,7 @@ def _append_base_plate(
 ) -> None:
     """
     Append a solid rectangular base plate to an open OBJ file.
-    All coordinates are in OBJ units (inches at 1:50000).
+    All coordinates are in OBJ units (millimetres).
     Top face at z=0, bottom face at z=-thickness_obj.
     vertex_offset is the current 0-based global vertex count.
     """
@@ -157,10 +158,10 @@ def _write_obj(
 
     base_plate: if provided, a solid rectangular base plate is appended.
                 Tuple of (xmin_obj, xmax_obj, ymin_obj, ymax_obj, thickness_obj)
-                where all values are in OBJ inches at the given scale.
+                where all values are in OBJ millimetres at the given scale.
     scale:      Print scale denominator (e.g. 50000 for 1:50000).
     """
-    coord_scale = 1_000 / (scale * 25.4)  # real metres → OBJ inches
+    coord_scale = 1_000 / scale  # real metres → OBJ millimetres
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     total_buildings = len(meshes)
 
@@ -170,14 +171,14 @@ def _write_obj(
         f.write(f"# Generated: {timestamp}\n")
         f.write(f"# Source: OpenStreetMap contributors (ODbL 1.0)\n")
         f.write(f"# Centre: lat={lat:.6f}, lon={lon:.6f}  |  Radius: {radius_m:.0f} m\n")
-        f.write(f"# Scale: 1:{scale}  (1 OBJ unit = 1 inch — import as inches)\n")
+        f.write(f"# Scale: 1:{scale}  (1 OBJ unit = 1 mm — import as mm)\n")
         f.write(f"# Coordinate system: X=east, Y=north, Z=up  (origin at city centre)\n")
         f.write(f"# Buildings: {total_buildings}\n")
         if base_plate:
             xmn, xmx, ymn, ymx, t = base_plate
             f.write(
-                f"# Base plate: {(xmx-xmn)*25.4:.1f} x {(ymx-ymn)*25.4:.1f} mm footprint, "
-                f"{t*25.4:.1f} mm thick (z = {-t*25.4:.1f} to 0 mm)\n"
+                f"# Base plate: {xmx-xmn:.1f} x {ymx-ymn:.1f} mm footprint, "
+                f"{t:.1f} mm thick (z = {-t:.1f} to 0 mm)\n"
             )
         f.write(f"#\n")
         f.write(f"mtllib {mtl_filename}\n\n")
@@ -298,10 +299,10 @@ def export_cropped(
 
     _write_mtl(mtl_path)
 
-    # Base plate bounds in OBJ inches (print cm → mm → inches)
-    bx_obj = crop_w_cm * 10.0 / 25.4 / 2.0
-    by_obj = crop_h_cm * 10.0 / 25.4 / 2.0
-    thickness_obj = base_thickness_mm / 25.4
+    # Base plate bounds in OBJ millimetres (print cm → mm)
+    bx_obj = crop_w_cm * 10.0 / 2.0
+    by_obj = crop_h_cm * 10.0 / 2.0
+    thickness_obj = base_thickness_mm
 
     _write_obj(
         obj_path, mtl_filename, meshes, city_name, radius_m, lat, lon,

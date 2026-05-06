@@ -64,6 +64,18 @@ if "custom_lat" not in st.session_state:
 if "custom_lon" not in st.session_state:
     st.session_state.custom_lon = -74.0060
 
+# Apply any pending map click before widgets are instantiated. Streamlit forbids
+# writing to a widget-keyed session state slot after the widget renders, so the
+# click handler stages the new coords here and reruns; we flush them here on the
+# next run, before custom_lat/custom_lon widgets are created.
+_pending_click = st.session_state.pop("_pending_click", None)
+if _pending_click is not None:
+    _p_lat, _p_lon = _pending_click
+    st.session_state.custom_lat = _p_lat
+    st.session_state.custom_lon = _p_lon
+    st.session_state.map_center_lat = _p_lat
+    st.session_state.map_center_lon = _p_lon
+
 # Defaults used by both sidebar logic and generation logic.
 fetch_buffer_pct = 0.10
 min_buildings = 5
@@ -102,6 +114,20 @@ with left:
                 st.session_state.map_center_lat = None
                 st.session_state.map_center_lon = None
                 st.rerun()
+
+    st.subheader("Building source")
+    source = st.radio(
+        "Data source",
+        options=["overture", "osm"],
+        index=0,
+        horizontal=True,
+        help=(
+            "Overture (default): monthly GeoParquet release on S3, fuses OSM "
+            "+ ML footprints (~24× more buildings globally; better height "
+            "coverage). Requires duckdb. "
+            "OSM: live Overpass API query — no extra deps."
+        ),
+    )
 
     st.subheader("Print size")
     photo_size = st.selectbox("Photo size", [*PHOTO_SIZE_PRESETS_CM.keys(), "Custom"], index=0)
@@ -188,20 +214,15 @@ with center:
     st.caption("Red rectangle = final model area.  Gray dashed = data-fetch buffer.")
     st.caption("红色框 = 最终打印范围。灰色虚线框 = 数据抓取范围。")
 
-    # Reposition crop center on map click.
+    # Reposition crop center on map click. Stage the new coords as a pending
+    # update; the top-of-script handler flushes them before widgets render,
+    # which is the only safe time to write widget-keyed session state.
     if map_data and map_data.get("last_clicked"):
         clicked_lat = map_data["last_clicked"]["lat"]
         clicked_lon = map_data["last_clicked"]["lng"]
-        if use_custom_center:
-            if (clicked_lat, clicked_lon) != (st.session_state.custom_lat, st.session_state.custom_lon):
-                st.session_state.custom_lat = clicked_lat
-                st.session_state.custom_lon = clicked_lon
-                st.rerun()
-        else:
-            if (clicked_lat, clicked_lon) != (st.session_state.map_center_lat, st.session_state.map_center_lon):
-                st.session_state.map_center_lat = clicked_lat
-                st.session_state.map_center_lon = clicked_lon
-                st.rerun()
+        if (clicked_lat, clicked_lon) != (lat, lon):
+            st.session_state._pending_click = (clicked_lat, clicked_lon)
+            st.rerun()
 
 with right:
     st.subheader("Output")
@@ -220,8 +241,8 @@ with right:
             try:
                 result = run_pipeline(
                     city=city,
-                    center_lat=lat if use_custom_center else None,
-                    center_lon=lon if use_custom_center else None,
+                    center_lat=lat,
+                    center_lon=lon,
                     scale=layout.scale,
                     output=str(target),
                     mode="clip",
@@ -230,6 +251,7 @@ with right:
                     min_buildings=int(min_buildings),
                     verbose=bool(verbose),
                     radius_m=float(custom_radius if override_radius else layout.fetch_radius_m),
+                    source=source,
                     logger=logger,
                 )
                 status.update(label="Generated successfully", state="complete")

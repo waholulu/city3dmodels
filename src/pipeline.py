@@ -14,13 +14,22 @@ from .exceptions import City3DError
 from .exporter import export, export_cropped, export_tiled, print_cm_to_real_m
 from .geocoder import geocode_city
 from .model_builder import build_all_meshes
+from . import osm_fetcher, overture_fetcher
 from .osm_fetcher import (
     bbox_size_m,
     clip_footprints_to_rect,
-    fetch_buildings,
-    fetch_buildings_bbox,
     filter_footprints_to_rect,
 )
+
+
+def _select_fetcher(source: str):
+    """Return the (fetch_buildings, fetch_buildings_bbox) pair for a source name."""
+    src = source.lower().strip()
+    if src == "osm":
+        return osm_fetcher.fetch_buildings, osm_fetcher.fetch_buildings_bbox
+    if src == "overture":
+        return overture_fetcher.fetch_buildings, overture_fetcher.fetch_buildings_bbox
+    raise ValueError(f"Unsupported source: {source!r} (expected 'osm' or 'overture')")
 from .validator import (
     merge_reports,
     validate_footprints,
@@ -79,9 +88,11 @@ def generate_model(
     verbose: bool = False,
     radius_m: float | None = None,
     logger: Logger | None = None,
+    source: str = "overture",
 ) -> GenerationResult:
     """Generate city models via shared pipeline for CLI and web."""
     log = logger or _default_logger
+    fetch_buildings, fetch_buildings_bbox = _select_fetcher(source)
     out_dir = Path(output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -236,6 +247,7 @@ def generate_model(
 
     metadata = {
         "city": city,
+        "source": source,
         "center": {"lat": center_lat, "lon": center_lon},
         "bbox": None if bbox is None else {
             "south": bbox[0],

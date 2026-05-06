@@ -38,9 +38,9 @@ python main.py "New York" --radius 1000 --output ./output --verbose
 
 ## OBJ 单位与比例
 
-导出的 OBJ 坐标单位为 **英寸（inch）**，文件头也会写出单位说明（`1 OBJ unit = 1 inch`）。
+导出的 OBJ 坐标单位为 **毫米（mm）**，文件头也会写出单位说明（`1 OBJ unit = 1 mm`）。
 
-导入 Blender/3D 软件时应按 inch 解释。
+绝大多数切片机和 3D 软件默认按 mm 解释 OBJ，导入后即为 1:scale 下的真实打印尺寸，无需手动换算。
 
 ## Streamlit UI（推荐）
 

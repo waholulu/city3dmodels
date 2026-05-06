@@ -21,11 +21,11 @@ _METRES_PER_FLOOR = 3.0
 
 @dataclass
 class BuildingFootprint:
-    osm_id: int
-    osm_type: str               # "way" or "relation"
+    osm_id: int | str           # OSM ID (int) or Overture GERS ID (str)
+    osm_type: str               # "way" / "relation" / "overture"
     polygon: Polygon            # Shapely polygon in local metres (origin-centred)
     height_m: float             # Building height in metres
-    building_type: str          # Value of building= tag
+    building_type: str          # OSM building= tag, or Overture class
     levels: int | None          # Number of floors, if known
     raw_tags: dict = field(default_factory=dict)
 

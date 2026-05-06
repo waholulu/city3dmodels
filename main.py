@@ -48,6 +48,17 @@ def parse_args() -> argparse.Namespace:
         help="Tile size in cm at the selected print scale (W_CM H_CM)",
     )
     parser.add_argument("--base-mm", type=float, default=1.0, dest="base_mm", metavar="MM")
+    parser.add_argument(
+        "--source",
+        choices=("overture", "osm"),
+        default="overture",
+        help=(
+            "Building data source. 'overture' (default) queries Overture Maps "
+            "GeoParquet on S3 — global, monthly refresh, fuses OSM + ML "
+            "footprints (~24× more buildings, better heights); requires "
+            "duckdb. 'osm' queries the Overpass API directly."
+        ),
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser.parse_args()
 
@@ -74,6 +85,7 @@ def main() -> None:
             min_buildings=args.min_buildings,
             verbose=args.verbose,
             radius_m=radius,
+            source=args.source,
         )
     except City3DError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

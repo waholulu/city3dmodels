@@ -134,7 +134,7 @@ UI 复用现有 pipeline，不重写生成链路。
 ## 9. 文档与一致性修正
 
 - README 默认比例尺统一为 `1:50000`
-- OBJ 单位说明统一为 `inch`
+- OBJ 单位说明统一为 `mm`
 - `--tile` 文案改为“at the selected print scale”
 - validator 输出中的比例尺由运行时传入的 `scale` 决定
 

@@ -38,11 +38,22 @@ main.py              # CLI entry point; run_pipeline() chains all stages
 src/
   exceptions.py      # City3DError base + subclasses (GeocoderError, OSMFetchError, ValidationError)
   geocoder.py        # geocode_city() → (lat, lon) via Nominatim
-  osm_fetcher.py     # fetch_buildings() → list[BuildingFootprint]
+  osm_fetcher.py     # fetch_buildings() → list[BuildingFootprint] (Overpass API)
+  overture_fetcher.py# fetch_buildings() → list[BuildingFootprint] (Overture GeoParquet on S3)
+  pipeline.py        # generate_model(); _select_fetcher() dispatches on source="osm"|"overture"
   model_builder.py   # build_all_meshes() → list[BuildingMesh]
   exporter.py        # export() / export_tiled() / export_cropped() → OBJ + MTL
   validator.py       # Three-stage validation returning ValidationReport
+scripts/
+  compare_sources.py # Side-by-side OSM vs Overture coverage report for a city
 ```
+
+Default building source is **Overture** (monthly refresh, fuses OSM + ML
+footprints, ~24× more buildings globally; better height coverage).
+Requires `duckdb`. Pass `--source osm` to fall back to Overpass. The
+Overture release is set by `_DEFAULT_RELEASE` in
+`src/overture_fetcher.py` and can be overridden with the `OVERTURE_RELEASE`
+env var.
 
 ## Data flow
 
@@ -64,7 +75,7 @@ geocode_city(city)
 | Height source | `building:height` → `height` → `levels×3 m` → default 9 m |
 | Roof triangulation | Shapely Delaunay; falls back to n-gon face if triangulation fails |
 | Courtyards | Inner rings extruded with reversed winding; no roof face generated |
-| OBJ scale | `_PRINT_SCALE = 50_000`; `_COORD_SCALE = 1000 / (_PRINT_SCALE × 25.4) ≈ 7.874e-4` (m → OBJ **inches** at 1:50000); most software imports OBJ in inches by default so no unit override needed |
+| OBJ scale | `_PRINT_SCALE = 50_000`; `coord_scale = 1000 / _PRINT_SCALE = 0.02` (m → OBJ **mm** at 1:50000); most slicers and CAD apps import OBJ as mm by default, so the model lands at the correct print size with no unit override |
 | Network retry | Overpass: 3 attempts, 5 s / 10 s / 20 s backoff |
 | Face indices | `BuildingMesh.faces` stores **1-based local** indices; `global_vertex_offset` is accumulated in `_write_obj()` and must never be reset between buildings |
 
@@ -73,8 +84,11 @@ geocode_city(city)
 ### Add a new export format (e.g., glTF)
 Create `src/exporter_gltf.py` accepting `list[BuildingMesh]`; add `--format` to `main.py`.
 
-### Add a new OSM data source
-Modify `_overpass_query()` in `src/osm_fetcher.py`, or add a new fetcher and switch in `main.py`.
+### Add a new building data source
+Add a new module under `src/` exposing `fetch_buildings()` and
+`fetch_buildings_bbox()` with the same signatures as `osm_fetcher`/`overture_fetcher`,
+returning `list[BuildingFootprint]`. Then extend `_select_fetcher()` in
+`src/pipeline.py` and the `--source` choices in `main.py`.
 
 ### Change material colours
 Edit `_MTL_CONTENT` in `src/exporter.py`; adjust `Kd` (diffuse RGB) values.
@@ -87,7 +101,7 @@ Constants at the top of `src/validator.py`:
 - `_PRINT_MIN_EXTENT_CM` / `_PRINT_MAX_EXTENT_CM` — footprint side length at print scale (default 5–50 cm)
 - `_PRINT_MAX_HEIGHT_CM` — tallest building at print scale (default 10 cm)
 - `validate_footprints()` `min_buildings` parameter
-- `_OBJ_UNIT_CM = 25.4 / 10` — conversion factor OBJ inches → cm used in print-size stats
+- `_obj_unit_cm = 0.1` — conversion factor OBJ mm → cm used in print-size stats
 
 ## Gotchas
 
